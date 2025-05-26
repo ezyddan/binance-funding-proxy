@@ -90,7 +90,7 @@ app.post("/account-positions", async (req, res) => {
 });
 // ✅ /account-income สำหรับดึง Realized PnL (Position History)
 app.post("/account-income", async (req, res) => {
-  const { apiKey, apiSecret, incomeType = "REALIZED_PNL" } = req.body;
+  const { apiKey, apiSecret, incomeType = "REALIZED_PNL", startTime } = req.body;
 
   if (!apiKey || !apiSecret) {
     return res.status(400).json({ error: "Missing API credentials" });
@@ -98,9 +98,12 @@ app.post("/account-income", async (req, res) => {
 
   try {
     const timestamp = Date.now();
-    const query = `incomeType=${incomeType}&timestamp=${timestamp}`;
-    const signature = crypto.createHmac("sha256", apiSecret).update(query).digest("hex");
+    let query = `incomeType=${incomeType}&timestamp=${timestamp}`;
+    if (startTime) {
+      query += `&startTime=${startTime}`;
+    }
 
+    const signature = crypto.createHmac("sha256", apiSecret).update(query).digest("hex");
     const url = `https://fapi.binance.com/fapi/v1/income?${query}&signature=${signature}`;
 
     const response = await fetch(url, {
@@ -113,7 +116,7 @@ app.post("/account-income", async (req, res) => {
     const data = await response.json();
     res.json(data);
   } catch (err) {
-    console.error(err);
+    console.error("Income Error:", err);
     res.status(500).json({ error: "Internal server error" });
   }
 });
