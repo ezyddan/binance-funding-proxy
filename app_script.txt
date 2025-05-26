@@ -183,10 +183,13 @@ function fetchPositionHistory() {
   const apiSecret = config.getRange("B2").getValue().toString().trim();
 
   const url = "https://binance-funding-proxy-production.up.railway.app/account-income";
+  const weekAgo = Date.now() - 30 * 24 * 60 * 60 * 1000
+  console.log(weekAgo)
   const payload = {
     apiKey: apiKey,
     apiSecret: apiSecret,
-    incomeType: "REALIZED_PNL"
+    incomeType: "REALIZED_PNL",
+    startTime: weekAgo
   };
 
   const options = {
@@ -199,9 +202,10 @@ function fetchPositionHistory() {
   const response = UrlFetchApp.fetch(url, options);
   const raw = response.getContentText();
 
-  let data;
   try {
     data = JSON.parse(raw);
+
+
     if (!Array.isArray(data)) throw new Error(data.msg || "ไม่พบข้อมูล");
   } catch (e) {
     SpreadsheetApp.getUi().alert("❌ ERROR: " + e.message);
@@ -228,6 +232,55 @@ function fetchPositionHistory() {
   });
 
   applyPNLFormatting("PositionHistory");
+}
+
+function buildRevenueDashboard() {
+  const timeZone = Session.getScriptTimeZone();
+  const ledgerSheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName("FundingLedger");
+  const positionSheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName("PositionHistory");
+  const dashboardSheet = getOrCreateSheet("Dashboard");
+  dashboardSheet.clearContents();
+
+  const fundingMap = {};  // { yyyy-MM-dd: sum }
+  const positionMap = {}; // { yyyy-MM-dd: sum }
+
+  // ✅ 1. สรุป funding fee รายวัน
+  const ledgerData = ledgerSheet.getDataRange().getValues();
+  for (let i = 1; i < ledgerData.length; i++) {
+    const income = parseFloat(ledgerData[i][2]);
+    const time = new Date(ledgerData[i][3]);
+    const day = Utilities.formatDate(time, timeZone, "yyyy-MM-dd");
+
+    if (!fundingMap[day]) fundingMap[day] = 0;
+    fundingMap[day] += income;
+  }
+
+  // ✅ 2. สรุป position PnL รายวัน
+  const positionData = positionSheet.getDataRange().getValues();
+  for (let i = 1; i < positionData.length; i++) {
+    const pnl = parseFloat(positionData[i][2]);
+    const time = new Date(positionData[i][3]);
+    const day = Utilities.formatDate(time, timeZone, "yyyy-MM-dd");
+
+    if (!positionMap[day]) positionMap[day] = 0;
+    positionMap[day] += pnl;
+  }
+
+  // ✅ 3. รวมสองฝั่งเข้า Dashboard
+  const allDays = Array.from(new Set([...Object.keys(fundingMap), ...Object.keys(positionMap)]))
+    .sort();
+
+  dashboardSheet.appendRow(["Date", "Funding Income (USDT)", "Position PnL (USDT)", "Net Total (USDT)", "Direction"]);
+
+  allDays.forEach(day => {
+    const funding = fundingMap[day] || 0;
+    const position = positionMap[day] || 0;
+    const total = funding + position;
+    const direction = total >= 0 ? "✅ บวก" : "❌ ลบ";
+    dashboardSheet.appendRow([day, funding, position, total, direction]);
+  });
+
+  applyDashboardFormatting("Dashboard");
 }
 
 // ===== FORMATTER: สีใน DailySummary & SummaryTotal =====
@@ -344,6 +397,47 @@ function applyPNLFormatting(sheetName) {
       .setFontColor("#c62828")
       .setBackground("#ffebee")
       .setRanges([pnlRange])
+      .build()
+  ];
+
+  sheet.setConditionalFormatRules(rules);
+}
+function applyDashboardFormatting(sheetName) {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(sheetName);
+  const lastRow = sheet.getLastRow();
+
+  const netRange = sheet.getRange("D2:D" + lastRow);
+  const directionRange = sheet.getRange("E2:E" + lastRow);
+  netRange.clearFormat();
+  directionRange.clearFormat();
+
+  const rules = [
+    SpreadsheetApp.newConditionalFormatRule()
+      .whenNumberGreaterThan(0)
+      .setFontColor("#1b5e20")
+      .setBackground("#e8f5e9")
+      .setRanges([netRange])
+      .build(),
+
+    SpreadsheetApp.newConditionalFormatRule()
+      .whenNumberLessThan(0)
+      .setFontColor("#c62828")
+      .setBackground("#ffebee")
+      .setRanges([netRange])
+      .build(),
+
+    SpreadsheetApp.newConditionalFormatRule()
+      .whenTextContains("บวก")
+      .setBackground("#e0f2f1")
+      .setFontColor("#00796b")
+      .setRanges([directionRange])
+      .build(),
+
+    SpreadsheetApp.newConditionalFormatRule()
+      .whenTextContains("ลบ")
+      .setBackground("#fbe9e7")
+      .setFontColor("#bf360c")
+      .setRanges([directionRange])
       .build()
   ];
 
