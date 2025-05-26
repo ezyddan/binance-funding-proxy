@@ -1,0 +1,357 @@
+// ===== MAIN 1: ดึง Funding Fee + สรุปรายวัน + รวมรายเหรียญ =====
+function fetchFundingFeeFromAccount() {
+  const sheetLedger = getOrCreateSheet("FundingLedger");
+  const sheetSummary = getOrCreateSheet("DailySummary");
+  const sheetConfig = SpreadsheetApp.getActiveSpreadsheet().getSheetByName("Config");
+  const timeZone = Session.getScriptTimeZone();
+
+  const apiKey = sheetConfig.getRange("B1").getValue().toString().trim();
+  const apiSecret = sheetConfig.getRange("B2").getValue().toString().trim();
+  const payload = { apiKey: apiKey, apiSecret: apiSecret };
+  const url = "https://binance-funding-proxy-production.up.railway.app/account-funding";
+
+  const options = {
+    method: "post",
+    contentType: "application/json",
+    payload: JSON.stringify(payload),
+    muteHttpExceptions: true
+  };
+
+  const response = UrlFetchApp.fetch(url, options);
+  const raw = response.getContentText();
+
+  let data;
+  try {
+    data = JSON.parse(raw);
+    if (!Array.isArray(data)) throw new Error(data.msg || "ไม่พบข้อมูลจากบัญชี");
+  } catch (e) {
+    SpreadsheetApp.getUi().alert("❌ ERROR: " + e.message);
+    Logger.log(raw);
+    return;
+  }
+
+  sheetLedger.clearContents();
+  sheetLedger.appendRow(["Date/Time", "Symbol", "Income (USDT)", "Funding Time", "Type"]);
+
+  const summaryMap = {}; // key = date|symbol
+  const now = Utilities.formatDate(new Date(), timeZone, "yyyy-MM-dd HH:mm");
+
+  data.forEach(entry => {
+    const income = parseFloat(entry.income);
+    const fundingTime = new Date(entry.time);
+    const formattedTime = Utilities.formatDate(fundingTime, timeZone, "yyyy-MM-dd HH:mm");
+    const dateKey = Utilities.formatDate(fundingTime, timeZone, "yyyy-MM-dd");
+    const symbol = entry.symbol;
+    const type = income >= 0 ? "รายรับ" : "รายจ่าย";
+
+    sheetLedger.appendRow([now, symbol, income, formattedTime, type]);
+
+    const summaryKey = `${dateKey}|${symbol}`;
+    if (!Object.hasOwn(summaryMap, summaryKey)) {
+      summaryMap[summaryKey] = { date: dateKey, symbol: symbol, total: 0 };
+    }
+    summaryMap[summaryKey].total += income;
+  });
+
+  const sorted = Object.values(summaryMap).sort((a, b) =>
+    a.date.localeCompare(b.date) || a.symbol.localeCompare(b.symbol)
+  );
+
+  const symbolTotals = {};
+  const dailyRows = [];
+
+  sorted.forEach(entry => {
+    const direction = entry.total >= 0 ? "✅ บวก" : "❌ ลบ";
+    dailyRows.push([entry.date, entry.symbol, entry.total, direction]);
+
+    if (!symbolTotals[entry.symbol]) symbolTotals[entry.symbol] = 0;
+    symbolTotals[entry.symbol] += entry.total;
+  });
+
+  // ===== เขียน DailySummary: สรุปเหรียญอยู่บนสุด =====
+  sheetSummary.clearContents();
+  sheetSummary.appendRow(["🔥 รวมรายเหรียญทั้งหมด"]);
+  sheetSummary.appendRow(["Symbol", "Total All Time (USDT)"]);
+  Object.entries(symbolTotals).forEach(([symbol, total]) => {
+    sheetSummary.appendRow([symbol, total]);
+  });
+
+  sheetSummary.appendRow([""]);
+  sheetSummary.appendRow(["Date", "Symbol", "Total Income (USDT)", "Direction"]);
+  dailyRows.forEach(row => sheetSummary.appendRow(row));
+
+  applySummaryFormatting("DailySummary");
+}
+
+// ===== MAIN 2: ดึง Funding Rate (Public) =====
+function fetchFundingRatePublic() {
+  const sheet = getOrCreateSheet("FundingRatePublic");
+  sheet.clear();
+  sheet.appendRow(["Date/Time", "Symbol", "Rate (%)", "Funding Time", "Status"]);
+
+  const timeZone = Session.getScriptTimeZone();
+  const now = Utilities.formatDate(new Date(), timeZone, "yyyy-MM-dd HH:mm");
+
+  const baseSymbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT"];
+  const summarySheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName("DailySummary");
+  const summarySymbolsRaw = summarySheet.getRange("B2:B" + summarySheet.getLastRow()).getValues();
+  const summarySymbols = summarySymbolsRaw.flat().filter(s => !!s);
+
+  const allSymbols = [...new Set([...baseSymbols, ...summarySymbols])];
+
+  allSymbols.forEach(symbol => {
+    try {
+      const url = `https://binance-funding-proxy-production.up.railway.app/funding-rate?symbol=${symbol}`;
+      const response = UrlFetchApp.fetch(url);
+      const data = JSON.parse(response.getContentText())[0];
+
+      const rate = parseFloat(data.fundingRate);
+      const ratePercent = (rate * 100).toFixed(4);
+      const fundingTime = Utilities.formatDate(new Date(data.fundingTime), timeZone, "yyyy-MM-dd HH:mm");
+      const status = rate >= 0 ? "✅ บวก" : "❌ ลบ";
+
+      sheet.appendRow([now, symbol, ratePercent, fundingTime, status]);
+    } catch (e) {
+      Logger.log(`❌ Error fetching ${symbol}: ${e.message}`);
+    }
+  });
+}
+
+// ===== MAIN 3: ดึงตำแหน่งปัจจุบัน (PositionNow) =====
+function fetchCurrentPosition() {
+  const sheet = getOrCreateSheet("PositionNow");
+  const configSheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName("Config");
+  const timeZone = Session.getScriptTimeZone();
+
+  const apiKey = configSheet.getRange("B1").getValue().toString().trim();
+  const apiSecret = configSheet.getRange("B2").getValue().toString().trim();
+  const url = "https://binance-funding-proxy-production.up.railway.app/account-positions";
+
+  const payload = { apiKey: apiKey, apiSecret: apiSecret };
+
+  const options = {
+    method: "post",
+    contentType: "application/json",
+    payload: JSON.stringify(payload),
+    muteHttpExceptions: true
+  };
+
+  const response = UrlFetchApp.fetch(url, options);
+  const raw = response.getContentText();
+
+  let data;
+  try {
+    data = JSON.parse(raw);
+    if (!Array.isArray(data)) throw new Error(data.msg || "ไม่พบข้อมูลตำแหน่ง");
+  } catch (e) {
+    SpreadsheetApp.getUi().alert("❌ ERROR: " + e.message);
+    Logger.log(raw);
+    return;
+  }
+
+  sheet.clear();
+  sheet.appendRow(["Date/Time", "Symbol", "Side", "Size", "Entry Price", "Mark Price", "Unrealized PnL (USDT)"]);
+
+  const now = Utilities.formatDate(new Date(), timeZone, "yyyy-MM-dd HH:mm");
+
+  data.forEach(pos => {
+    const size = parseFloat(pos.positionAmt);
+    if (size === 0) return;
+
+    const side = size > 0 ? "Long" : "Short";
+    const row = [
+      now,
+      pos.symbol,
+      side,
+      size,
+      parseFloat(pos.entryPrice),
+      parseFloat(pos.markPrice),
+      parseFloat(pos.unrealizedProfit)
+    ];
+    sheet.appendRow(row);
+  });
+
+  applyPositionFormatting("PositionNow");
+}
+
+function fetchPositionHistory() {
+  const sheet = getOrCreateSheet("PositionHistory");
+  const config = SpreadsheetApp.getActiveSpreadsheet().getSheetByName("Config");
+  const timeZone = Session.getScriptTimeZone();
+
+  const apiKey = config.getRange("B1").getValue().toString().trim();
+  const apiSecret = config.getRange("B2").getValue().toString().trim();
+
+  const url = "https://binance-funding-proxy-production.up.railway.app/account-income";
+  const payload = {
+    apiKey: apiKey,
+    apiSecret: apiSecret,
+    incomeType: "REALIZED_PNL"
+  };
+
+  const options = {
+    method: "post",
+    contentType: "application/json",
+    payload: JSON.stringify(payload),
+    muteHttpExceptions: true
+  };
+
+  const response = UrlFetchApp.fetch(url, options);
+  const raw = response.getContentText();
+
+  let data;
+  try {
+    data = JSON.parse(raw);
+    if (!Array.isArray(data)) throw new Error(data.msg || "ไม่พบข้อมูล");
+  } catch (e) {
+    SpreadsheetApp.getUi().alert("❌ ERROR: " + e.message);
+    Logger.log(raw);
+    return;
+  }
+
+  sheet.clearContents();
+  sheet.appendRow(["Date/Time", "Symbol", "PnL (USDT)", "Funding Time", "Note"]);
+
+  const now = Utilities.formatDate(new Date(), timeZone, "yyyy-MM-dd HH:mm");
+
+  data.forEach(entry => {
+    const pnl = parseFloat(entry.income);
+    const timeFormatted = Utilities.formatDate(new Date(entry.time), timeZone, "yyyy-MM-dd HH:mm");
+    const note = entry.info || "";
+    sheet.appendRow([
+      now,
+      entry.symbol,
+      pnl,
+      timeFormatted,
+      note
+    ]);
+  });
+
+  applyPNLFormatting("PositionHistory");
+}
+
+// ===== FORMATTER: สีใน DailySummary & SummaryTotal =====
+function applySummaryFormatting(sheetName) {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(sheetName);
+  const lastRow = sheet.getLastRow();
+
+  const incomeRange = sheet.getRange("C2:C" + lastRow);
+  const directionRange = sheet.getRange("D2:D" + lastRow);
+  incomeRange.clearFormat();
+  directionRange.clearFormat();
+
+  const rules = [
+    SpreadsheetApp.newConditionalFormatRule()
+      .whenNumberGreaterThan(0)
+      .setFontColor("#1b5e20")
+      .setRanges([incomeRange])
+      .build(),
+
+    SpreadsheetApp.newConditionalFormatRule()
+      .whenNumberLessThan(0)
+      .setFontColor("#c62828")
+      .setRanges([incomeRange])
+      .build(),
+
+    SpreadsheetApp.newConditionalFormatRule()
+      .whenTextContains("บวก")
+      .setBackground("#e0f7e9")
+      .setFontColor("#1a7f37")
+      .setRanges([directionRange])
+      .build(),
+
+    SpreadsheetApp.newConditionalFormatRule()
+      .whenTextContains("ลบ")
+      .setBackground("#fdecea")
+      .setFontColor("#b71c1c")
+      .setRanges([directionRange])
+      .build()
+  ];
+
+  const values = sheet.getRange(1, 1, lastRow).getValues();
+  let summaryStartRow = -1;
+  for (let i = 0; i < values.length; i++) {
+    if (values[i][0] === "🔥 รวมรายเหรียญทั้งหมด") {
+      summaryStartRow = i + 3;
+      break;
+    }
+  }
+
+  if (summaryStartRow > 0) {
+    const totalRange = sheet.getRange("B" + summaryStartRow + ":B" + lastRow);
+    rules.push(
+      SpreadsheetApp.newConditionalFormatRule()
+        .whenNumberGreaterThan(0)
+        .setFontColor("#1b5e20")
+        .setBackground("#e8f5e9")
+        .setRanges([totalRange])
+        .build(),
+
+      SpreadsheetApp.newConditionalFormatRule()
+        .whenNumberLessThan(0)
+        .setFontColor("#c62828")
+        .setBackground("#ffebee")
+        .setRanges([totalRange])
+        .build()
+    );
+  }
+
+  sheet.setConditionalFormatRules(rules);
+}
+
+// ===== FORMATTER: สีใน PositionNow =====
+function applyPositionFormatting(sheetName) {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(sheetName);
+  const lastRow = sheet.getLastRow();
+  const pnlRange = sheet.getRange("G2:G" + lastRow);
+  pnlRange.clearFormat();
+
+  const rules = [
+    SpreadsheetApp.newConditionalFormatRule()
+      .whenNumberGreaterThan(0)
+      .setFontColor("#1b5e20")
+      .setBackground("#e8f5e9")
+      .setRanges([pnlRange])
+      .build(),
+
+    SpreadsheetApp.newConditionalFormatRule()
+      .whenNumberLessThan(0)
+      .setFontColor("#c62828")
+      .setBackground("#ffebee")
+      .setRanges([pnlRange])
+      .build()
+  ];
+
+  sheet.setConditionalFormatRules(rules);
+}
+function applyPNLFormatting(sheetName) {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(sheetName);
+  const lastRow = sheet.getLastRow();
+  const pnlRange = sheet.getRange("C2:C" + lastRow);
+
+  pnlRange.clearFormat();
+
+  const rules = [
+    SpreadsheetApp.newConditionalFormatRule()
+      .whenNumberGreaterThan(0)
+      .setFontColor("#1b5e20")
+      .setBackground("#e8f5e9")
+      .setRanges([pnlRange])
+      .build(),
+
+    SpreadsheetApp.newConditionalFormatRule()
+      .whenNumberLessThan(0)
+      .setFontColor("#c62828")
+      .setBackground("#ffebee")
+      .setRanges([pnlRange])
+      .build()
+  ];
+
+  sheet.setConditionalFormatRules(rules);
+}
+
+// ===== UTILITY: สร้างชีทถ้ายังไม่มี =====
+function getOrCreateSheet(name) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  return ss.getSheetByName(name) || ss.insertSheet(name);
+}
