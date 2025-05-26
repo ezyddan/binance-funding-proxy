@@ -58,6 +58,37 @@ app.post("/account-funding", async (req, res) => {
   }
 });
 
+
+// ✅ ดึงตำแหน่งปัจจุบันจาก Futures Account
+app.post("/account-positions", async (req, res) => {
+  const { apiKey, apiSecret } = req.body;
+  if (!apiKey || !apiSecret) return res.status(400).json({ error: "Missing API credentials" });
+
+  try {
+    const timestamp = Date.now();
+    const query = `timestamp=${timestamp}`;
+    const signature = crypto.createHmac("sha256", apiSecret).update(query).digest("hex");
+
+    const url = `https://fapi.binance.com/fapi/v2/account?${query}&signature=${signature}`;
+    const response = await fetch(url, {
+      method: "GET",
+      headers: {
+        "X-MBX-APIKEY": apiKey
+      }
+    });
+
+    const data = await response.json();
+    if (!data || !data.positions) return res.status(400).json({ error: "Unexpected response", raw: data });
+
+    // ส่งเฉพาะ positions ที่ size ≠ 0
+    const activePositions = data.positions.filter(p => parseFloat(p.positionAmt) !== 0);
+    res.json(activePositions);
+  } catch (err) {
+    console.error("Position Error:", err);
+    res.status(500).json({ error: "Internal error" });
+  }
+});
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Proxy running on port ${PORT}`);
