@@ -149,7 +149,7 @@ app.post("/account-position-summary", async (req, res) => {
         continue;
       }
 
-      const orderQS = `symbol=${symbol}&timestamp=${timestamp}`;
+const orderQS = `symbol=${symbol}&timestamp=${timestamp}&recvWindow=60000`;
       const orderSig = crypto.createHmac('sha256', apiSecret).update(orderQS).digest('hex');
       const orderURL = `${base}/fapi/v1/allOrders?${orderQS}&signature=${orderSig}`;
 
