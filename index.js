@@ -120,6 +120,51 @@ app.post("/account-income", async (req, res) => {
     res.status(500).json({ error: "Internal server error" });
   }
 });
+app.post('/account-position-summary', async (req, res) => {
+  const { apiKey, apiSecret } = req.body;
+  if (!apiKey || !apiSecret) return res.status(400).json({ error: 'Missing credentials' });
+
+  try {
+    const timestamp = Date.now();
+    const base = 'https://fapi.binance.com';
+
+    // 🔹 1. Get income (REALIZED_PNL)
+    const incomeQS = `incomeType=REALIZED_PNL&limit=1000&timestamp=${timestamp}`;
+    const incomeSig = crypto.createHmac('sha256', apiSecret).update(incomeQS).digest('hex');
+    const incomeURL = `${base}/fapi/v1/income?${incomeQS}&signature=${incomeSig}`;
+    const incomeRes = await fetch(incomeURL, { headers: { 'X-MBX-APIKEY': apiKey } });
+    const incomes = await incomeRes.json();
+
+    // 🔹 2. Get all orders
+    const orderQS = `timestamp=${timestamp}`;
+    const orderSig = crypto.createHmac('sha256', apiSecret).update(orderQS).digest('hex');
+    const ordersRes = await fetch(`${base}/fapi/v1/allOrders?${orderQS}&signature=${orderSig}`, {
+      headers: { 'X-MBX-APIKEY': apiKey }
+    });
+    const orders = await ordersRes.json();
+
+    const result = incomes.map(p => {
+      const symbolOrders = orders.filter(o => o.symbol === p.symbol && o.status === 'FILLED');
+      const openOrder = symbolOrders.find(o => o.positionSide === 'BOTH' && o.type !== 'MARKET');
+      const closeOrder = symbolOrders.reverse().find(o => o.status === 'FILLED');
+
+      return {
+        symbol: p.symbol,
+        pnl: parseFloat(p.income),
+        closeTime: new Date(p.time).toISOString(),
+        openTime: openOrder ? new Date(openOrder.updateTime).toISOString() : null,
+        entryPrice: openOrder?.avgPrice || null,
+        closePrice: closeOrder?.avgPrice || null,
+        volume: closeOrder?.executedQty || null
+      };
+    });
+
+    res.json(result);
+  } catch (err) {
+    console.error('Position summary error:', err);
+    res.status(500).json({ error: 'Failed to fetch position summary' });
+  }
+});
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
