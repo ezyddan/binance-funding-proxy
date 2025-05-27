@@ -121,7 +121,13 @@ app.post("/account-income", async (req, res) => {
   }
 });
 app.post('/account-position-summary', async (req, res) => {
-  const { apiKey, apiSecret } = req.body;
+  const { apiKey, apiSecret, startTime } = req.body;
+
+let incomeQS = `incomeType=REALIZED_PNL&limit=1000&timestamp=${timestamp}`;
+if (startTime) {
+  incomeQS += `&startTime=${startTime}`;
+}
+
   if (!apiKey || !apiSecret) return res.status(400).json({ error: 'Missing credentials' });
 
   try {
