@@ -1,3 +1,4 @@
+// ✅ Railway Proxy (full version with debug logs)
 import express from 'express';
 import fetch from 'node-fetch';
 import crypto from 'crypto';
@@ -7,7 +8,6 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// 🔹 1. Public: funding rate ล่าสุด
 app.get("/funding-rate", async (req, res) => {
   const symbol = req.query.symbol || "BTCUSDT";
 
@@ -27,7 +27,6 @@ app.get("/funding-rate", async (req, res) => {
   }
 });
 
-// 🔹 2. Private: funding fee history
 app.post("/account-funding", async (req, res) => {
   const { apiKey, apiSecret } = req.body;
   if (!apiKey || !apiSecret) return res.status(400).json({ error: "Missing API credentials" });
@@ -58,8 +57,6 @@ app.post("/account-funding", async (req, res) => {
   }
 });
 
-
-// ✅ ดึงตำแหน่งปัจจุบันจาก Futures Account
 app.post("/account-positions", async (req, res) => {
   const { apiKey, apiSecret } = req.body;
   if (!apiKey || !apiSecret) return res.status(400).json({ error: "Missing API credentials" });
@@ -80,7 +77,6 @@ app.post("/account-positions", async (req, res) => {
     const data = await response.json();
     if (!data || !data.positions) return res.status(400).json({ error: "Unexpected response", raw: data });
 
-    // ส่งเฉพาะ positions ที่ size ≠ 0
     const activePositions = data.positions.filter(p => parseFloat(p.positionAmt) !== 0);
     res.json(activePositions);
   } catch (err) {
@@ -88,10 +84,9 @@ app.post("/account-positions", async (req, res) => {
     res.status(500).json({ error: "Internal error" });
   }
 });
-// ✅ /account-income สำหรับดึง Realized PnL (Position History)
+
 app.post("/account-income", async (req, res) => {
   const { apiKey, apiSecret, incomeType = "REALIZED_PNL", startTime } = req.body;
-
   if (!apiKey || !apiSecret) {
     return res.status(400).json({ error: "Missing API credentials" });
   }
@@ -99,10 +94,7 @@ app.post("/account-income", async (req, res) => {
   try {
     const timestamp = Date.now();
     let query = `incomeType=${incomeType}&timestamp=${timestamp}`;
-    if (startTime) {
-      query += `&startTime=${startTime}`;
-    }
-
+    if (startTime) query += `&startTime=${startTime}`;
     const signature = crypto.createHmac("sha256", apiSecret).update(query).digest("hex");
     const url = `https://fapi.binance.com/fapi/v1/income?${query}&signature=${signature}`;
 
@@ -120,39 +112,37 @@ app.post("/account-income", async (req, res) => {
     res.status(500).json({ error: "Internal server error" });
   }
 });
-app.post('/account-position-summary', async (req, res) => {
+
+app.post("/account-position-summary", async (req, res) => {
   const { apiKey, apiSecret, startTime } = req.body;
-
-let incomeQS = `incomeType=REALIZED_PNL&limit=1000&timestamp=${timestamp}`;
-if (startTime) {
-  incomeQS += `&startTime=${startTime}`;
-}
-
   if (!apiKey || !apiSecret) return res.status(400).json({ error: 'Missing credentials' });
 
   try {
     const timestamp = Date.now();
     const base = 'https://fapi.binance.com';
 
-    // 🔹 1. Get income (REALIZED_PNL)
-    const incomeQS = `incomeType=REALIZED_PNL&limit=1000&timestamp=${timestamp}`;
+    let incomeQS = `incomeType=REALIZED_PNL&limit=1000&timestamp=${timestamp}`;
+    if (startTime) incomeQS += `&startTime=${startTime}`;
     const incomeSig = crypto.createHmac('sha256', apiSecret).update(incomeQS).digest('hex');
     const incomeURL = `${base}/fapi/v1/income?${incomeQS}&signature=${incomeSig}`;
+
+    console.log("🔹 Fetching income...");
     const incomeRes = await fetch(incomeURL, { headers: { 'X-MBX-APIKEY': apiKey } });
     const incomes = await incomeRes.json();
+    console.log("✅ Got income", incomes.length);
 
-    // 🔹 2. Get all orders
     const orderQS = `timestamp=${timestamp}`;
     const orderSig = crypto.createHmac('sha256', apiSecret).update(orderQS).digest('hex');
     const ordersRes = await fetch(`${base}/fapi/v1/allOrders?${orderQS}&signature=${orderSig}`, {
       headers: { 'X-MBX-APIKEY': apiKey }
     });
     const orders = await ordersRes.json();
+    console.log("✅ Got orders", Array.isArray(orders) ? orders.length : orders);
 
     const result = incomes.map(p => {
       const symbolOrders = orders.filter(o => o.symbol === p.symbol && o.status === 'FILLED');
       const openOrder = symbolOrders.find(o => o.positionSide === 'BOTH' && o.type !== 'MARKET');
-      const closeOrder = symbolOrders.reverse().find(o => o.status === 'FILLED');
+      const closeOrder = [...symbolOrders].reverse().find(o => o.status === 'FILLED');
 
       return {
         symbol: p.symbol,
@@ -167,8 +157,8 @@ if (startTime) {
 
     res.json(result);
   } catch (err) {
-    console.error('Position summary error:', err);
-    res.status(500).json({ error: 'Failed to fetch position summary' });
+    console.error("Position summary error:", err);
+    res.status(500).json({ error: "Failed to fetch position summary" });
   }
 });
 
