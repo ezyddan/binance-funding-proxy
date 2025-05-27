@@ -131,29 +131,44 @@ app.post("/account-position-summary", async (req, res) => {
     const incomes = await incomeRes.json();
     console.log("✅ Got income", incomes.length);
 
-    const orderQS = `timestamp=${timestamp}`;
-    const orderSig = crypto.createHmac('sha256', apiSecret).update(orderQS).digest('hex');
-    const ordersRes = await fetch(`${base}/fapi/v1/allOrders?${orderQS}&signature=${orderSig}`, {
-      headers: { 'X-MBX-APIKEY': apiKey }
-    });
-    const orders = await ordersRes.json();
-    console.log("✅ Got orders", Array.isArray(orders) ? orders.length : orders);
+    const result = [];
 
-    const result = incomes.map(p => {
-      const symbolOrders = orders.filter(o => o.symbol === p.symbol && o.status === 'FILLED');
-      const openOrder = symbolOrders.find(o => o.positionSide === 'BOTH' && o.type !== 'MARKET');
-      const closeOrder = [...symbolOrders].reverse().find(o => o.status === 'FILLED');
+    for (const p of incomes) {
+      const symbol = p.symbol;
+      const orderQS = `symbol=${symbol}&timestamp=${timestamp}`;
+      const orderSig = crypto.createHmac('sha256', apiSecret).update(orderQS).digest('hex');
+      const orderURL = `${base}/fapi/v1/allOrders?${orderQS}&signature=${orderSig}`;
 
-      return {
-        symbol: p.symbol,
-        pnl: parseFloat(p.income),
-        closeTime: new Date(p.time).toISOString(),
-        openTime: openOrder ? new Date(openOrder.updateTime).toISOString() : null,
-        entryPrice: openOrder?.avgPrice || null,
-        closePrice: closeOrder?.avgPrice || null,
-        volume: closeOrder?.executedQty || null
-      };
-    });
+      try {
+        const ordersRes = await fetch(orderURL, { headers: { 'X-MBX-APIKEY': apiKey } });
+        const orders = await ordersRes.json();
+
+        const symbolOrders = orders.filter(o => o.status === 'FILLED');
+        const openOrder = symbolOrders.find(o => o.positionSide === 'BOTH' && o.type !== 'MARKET');
+        const closeOrder = [...symbolOrders].reverse().find(o => o.status === 'FILLED');
+
+        result.push({
+          symbol: p.symbol,
+          pnl: parseFloat(p.income),
+          closeTime: new Date(p.time).toISOString(),
+          openTime: openOrder ? new Date(openOrder.updateTime).toISOString() : null,
+          entryPrice: openOrder?.avgPrice || null,
+          closePrice: closeOrder?.avgPrice || null,
+          volume: closeOrder?.executedQty || null
+        });
+      } catch (orderErr) {
+        console.error(`Failed to fetch orders for ${symbol}`, orderErr);
+        result.push({
+          symbol: p.symbol,
+          pnl: parseFloat(p.income),
+          closeTime: new Date(p.time).toISOString(),
+          openTime: null,
+          entryPrice: null,
+          closePrice: null,
+          volume: null
+        });
+      }
+    }
 
     res.json(result);
   } catch (err) {
