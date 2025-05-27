@@ -1,4 +1,4 @@
-// ✅ Railway Proxy (full version with debug logs)
+// ✅ Railway Proxy (full version with symbol validation & fallback logs)
 import express from 'express';
 import fetch from 'node-fetch';
 import crypto from 'crypto';
@@ -7,6 +7,23 @@ import cors from 'cors';
 const app = express();
 app.use(cors());
 app.use(express.json());
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+// 🔹 Fetch valid symbols for filtering
+let validSymbols = [];
+(async () => {
+  try {
+    const res = await fetch("https://fapi.binance.com/fapi/v1/exchangeInfo");
+    const data = await res.json();
+    validSymbols = data.symbols.map(s => s.symbol);
+    console.log("✅ Loaded valid symbols", validSymbols.length);
+  } catch (err) {
+    console.error("❌ Failed to load symbol list", err);
+  }
+})();
 
 app.get("/funding-rate", async (req, res) => {
   const symbol = req.query.symbol || "BTCUSDT";
@@ -39,9 +56,7 @@ app.post("/account-funding", async (req, res) => {
     const url = `https://fapi.binance.com/fapi/v1/income?${query}&signature=${signature}`;
     const response = await fetch(url, {
       method: "GET",
-      headers: {
-        "X-MBX-APIKEY": apiKey
-      }
+      headers: { "X-MBX-APIKEY": apiKey }
     });
 
     const data = await response.json();
@@ -69,9 +84,7 @@ app.post("/account-positions", async (req, res) => {
     const url = `https://fapi.binance.com/fapi/v2/account?${query}&signature=${signature}`;
     const response = await fetch(url, {
       method: "GET",
-      headers: {
-        "X-MBX-APIKEY": apiKey
-      }
+      headers: { "X-MBX-APIKEY": apiKey }
     });
 
     const data = await response.json();
@@ -87,9 +100,7 @@ app.post("/account-positions", async (req, res) => {
 
 app.post("/account-income", async (req, res) => {
   const { apiKey, apiSecret, incomeType = "REALIZED_PNL", startTime } = req.body;
-  if (!apiKey || !apiSecret) {
-    return res.status(400).json({ error: "Missing API credentials" });
-  }
+  if (!apiKey || !apiSecret) return res.status(400).json({ error: "Missing API credentials" });
 
   try {
     const timestamp = Date.now();
@@ -100,9 +111,7 @@ app.post("/account-income", async (req, res) => {
 
     const response = await fetch(url, {
       method: "GET",
-      headers: {
-        "X-MBX-APIKEY": apiKey
-      }
+      headers: { "X-MBX-APIKEY": apiKey }
     });
 
     const data = await response.json();
@@ -112,10 +121,6 @@ app.post("/account-income", async (req, res) => {
     res.status(500).json({ error: "Internal server error" });
   }
 });
-
-function sleep(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms));
-}
 
 app.post("/account-position-summary", async (req, res) => {
   const { apiKey, apiSecret, startTime } = req.body;
@@ -139,16 +144,25 @@ app.post("/account-position-summary", async (req, res) => {
 
     for (const p of incomes) {
       const symbol = p.symbol;
+      if (!validSymbols.includes(symbol)) {
+        console.warn(`⚠️ Skipping invalid symbol: ${symbol}`);
+        continue;
+      }
+
       const orderQS = `symbol=${symbol}&timestamp=${timestamp}`;
       const orderSig = crypto.createHmac('sha256', apiSecret).update(orderQS).digest('hex');
       const orderURL = `${base}/fapi/v1/allOrders?${orderQS}&signature=${orderSig}`;
 
-      await sleep(150); // 💤 เพิ่ม delay ป้องกัน rate limit
+      await sleep(150);
 
       try {
         const ordersRes = await fetch(orderURL, { headers: { 'X-MBX-APIKEY': apiKey } });
         const orders = await ordersRes.json();
-        if (!Array.isArray(orders)) throw new Error(`Invalid orders for ${symbol}`);
+
+        if (!Array.isArray(orders)) {
+          console.error(`🚨 Binance response for ${symbol}:`, orders);
+          throw new Error(`Invalid orders for ${symbol}`);
+        }
 
         const symbolOrders = orders.filter(o => o.status === 'FILLED');
         const openOrder = symbolOrders.find(o => o.positionSide === 'BOTH' && o.type !== 'MARKET');
@@ -183,6 +197,7 @@ app.post("/account-position-summary", async (req, res) => {
     res.status(500).json({ error: "Failed to fetch position summary" });
   }
 });
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Proxy running on port ${PORT}`);
