@@ -148,9 +148,11 @@ app.post("/account-position-summary", async (req, res) => {
         console.warn(`⚠️ Skipping invalid symbol: ${symbol}`);
         continue;
       }
+const MAX_BACK = 90 * 24 * 60 * 60 * 1000;
+const now = Date.now();
 const closeTs = p.time;
-const windowBefore = 3 * 24 * 60 * 60 * 1000; // 3 วันก่อนหน้า
-const startTime = closeTs - windowBefore;
+const startTime = Math.max(closeTs - (3 * 24 * 60 * 60 * 1000), now - MAX_BACK);
+
 
 const orderQS = `symbol=${symbol}&startTime=${startTime}&endTime=${closeTs}&timestamp=${timestamp}&recvWindow=60000`;
 const orderSig = crypto.createHmac('sha256', apiSecret).update(orderQS).digest('hex');
