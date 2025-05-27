@@ -113,6 +113,10 @@ app.post("/account-income", async (req, res) => {
   }
 });
 
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
 app.post("/account-position-summary", async (req, res) => {
   const { apiKey, apiSecret, startTime } = req.body;
   if (!apiKey || !apiSecret) return res.status(400).json({ error: 'Missing credentials' });
@@ -139,9 +143,12 @@ app.post("/account-position-summary", async (req, res) => {
       const orderSig = crypto.createHmac('sha256', apiSecret).update(orderQS).digest('hex');
       const orderURL = `${base}/fapi/v1/allOrders?${orderQS}&signature=${orderSig}`;
 
+      await sleep(150); // 💤 เพิ่ม delay ป้องกัน rate limit
+
       try {
         const ordersRes = await fetch(orderURL, { headers: { 'X-MBX-APIKEY': apiKey } });
         const orders = await ordersRes.json();
+        if (!Array.isArray(orders)) throw new Error(`Invalid orders for ${symbol}`);
 
         const symbolOrders = orders.filter(o => o.status === 'FILLED');
         const openOrder = symbolOrders.find(o => o.positionSide === 'BOTH' && o.type !== 'MARKET');
@@ -152,12 +159,12 @@ app.post("/account-position-summary", async (req, res) => {
           pnl: parseFloat(p.income),
           closeTime: new Date(p.time).toISOString(),
           openTime: openOrder ? new Date(openOrder.updateTime).toISOString() : null,
-          entryPrice: openOrder?.avgPrice || null,
-          closePrice: closeOrder?.avgPrice || null,
+          entryPrice: openOrder?.avgPrice || openOrder?.price || null,
+          closePrice: closeOrder?.avgPrice || closeOrder?.price || null,
           volume: closeOrder?.executedQty || null
         });
       } catch (orderErr) {
-        console.error(`Failed to fetch orders for ${symbol}`, orderErr);
+        console.error(`⚠️ Failed to fetch orders for ${symbol}`, orderErr);
         result.push({
           symbol: p.symbol,
           pnl: parseFloat(p.income),
@@ -172,11 +179,10 @@ app.post("/account-position-summary", async (req, res) => {
 
     res.json(result);
   } catch (err) {
-    console.error("Position summary error:", err);
+    console.error("❌ Position summary error:", err);
     res.status(500).json({ error: "Failed to fetch position summary" });
   }
 });
-
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Proxy running on port ${PORT}`);
