@@ -148,10 +148,14 @@ app.post("/account-position-summary", async (req, res) => {
         console.warn(`⚠️ Skipping invalid symbol: ${symbol}`);
         continue;
       }
+const closeTs = p.time;
+const windowBefore = 3 * 24 * 60 * 60 * 1000; // 3 วันก่อนหน้า
+const startTime = closeTs - windowBefore;
 
-const orderQS = `symbol=${symbol}&timestamp=${timestamp}&recvWindow=60000`;
-      const orderSig = crypto.createHmac('sha256', apiSecret).update(orderQS).digest('hex');
-      const orderURL = `${base}/fapi/v1/allOrders?${orderQS}&signature=${orderSig}`;
+const orderQS = `symbol=${symbol}&startTime=${startTime}&endTime=${closeTs}&timestamp=${timestamp}&recvWindow=60000`;
+const orderSig = crypto.createHmac('sha256', apiSecret).update(orderQS).digest('hex');
+const orderURL = `${base}/fapi/v1/allOrders?${orderQS}&signature=${orderSig}`;
+
 
       await sleep(150);
 
